@@ -6,6 +6,7 @@ require 'tilt/erubis'
 configure do
   enable :sessions
   set :session_secret, 'secret'
+  set :erb, :escape_html => true
 end
 
 before do
@@ -30,15 +31,11 @@ helpers do
   end
 
   def sort_lists(lists, &block)
-    indexed_lists = {}
-    lists.each_with_index { |list, idx| indexed_lists[list] = idx }
-    indexed_lists.sort_by { |list, idx| all_done?(list) ? 1 : 0 }.each(&block)
+    lists.sort_by { |list| all_done?(list) ? 1 : 0 }.each(&block)
   end
 
   def sort_todos(todos, &block)
-    indexed_todos = {}
-    todos.each_with_index { |todo, idx| indexed_todos[todo] = idx }
-    indexed_todos.sort_by { |todo, idx| todo[:completed] ? 1 : 0 }.each(&block)
+    todos.sort_by { |todo| todo[:completed] ? 1 : 0 }.each(&block)
   end
 end
 
@@ -76,15 +73,24 @@ post '/lists' do
     session[:error] = error
     erb :new_list
   else
-    session[:lists] << { name: list_name, todos: [] }
+    index = next_idx(session[:lists])
+    session[:lists] << { idx: index, name: list_name, todos: [] }
     session[:success] = 'The list has been created.'
     redirect '/lists'
   end
 end
 
+def load_list(index)
+  list = find_item(index, session[:lists])
+  return list if list
+
+  session[:error] = 'The specified list was not found.'
+  redirect '/lists'
+end
+
 get '/lists/:index' do
   @index = params[:index].to_i
-  @todo_list = session[:lists][@index]
+  @todo_list = load_list(@index)
 
   erb :todo_list
 end
@@ -92,7 +98,7 @@ end
 #  Edit an existing todo list
 get '/lists/:index/edit' do
   @index = params[:index].to_i
-  @todo_list = session[:lists][@index]
+  @todo_list = load_list(@index)
 
   erb :edit_list
 end
@@ -100,7 +106,7 @@ end
 # Update an existing todo list
 post '/lists/:index' do
   @index = params[:index].to_i
-  @todo_list = session[:lists][@index]
+  @todo_list = load_list(@index)
   @list_name = params[:list_name].strip.squeeze(" ")
 
   error = detect_list_name_error(@list_name)
@@ -117,10 +123,15 @@ end
 #  Delete an existing todo list
 post '/lists/:index/destroy' do
   index = params[:index].to_i
-  session[:lists].delete_at(index)
+  list = find_item(index, session[:lists])
+  session[:lists].delete(list)
   session[:success] = 'The list has been deleted.'
-
-  redirect "/lists"
+  
+  if env["HTTP_X_REQUESTED_WITH"] == "XMLHttpRequest"
+    "/lists"
+  else
+    redirect "/lists"
+  end
 end
 
 # Return an error message if the name is invalid. Otherwise, return nil.
@@ -132,10 +143,15 @@ def detect_item_name_error(todo, todolist)
   end
 end
 
+def next_idx(list)
+  return 0 if list.empty?
+  list.map { |item| item[:idx] }.max + 1
+end
+
 # Add a todo item
 post '/lists/:index/todos' do
   @index = params[:index].to_i
-  @todo_list = session[:lists][@index]
+  @todo_list = load_list(@index)
   @todo = params[:todo].strip.squeeze(" ")
 
   error = detect_item_name_error(@todo, @todo_list[:todos])
@@ -143,41 +159,58 @@ post '/lists/:index/todos' do
     session[:error] = error
     erb :todo_list
   else
-    @todo_list[:todos] << { name: @todo, completed: false }
+    idx = next_idx(@todo_list[:todos])
+    @todo_list[:todos] << { idx: idx, name: @todo, completed: false }
     session[:success] = 'The todo item has been added.'
     redirect "/lists/#{@index}"
   end
 end
 
+def find_item(idx, list)
+  list.find { |item| item[:idx] == idx }
+end
+
 # Delete a todo item
 post '/lists/:index/todos/:item_idx/destroy' do
-  index = params[:index].to_i
-  item_idx = params[:item_idx].to_i
-  session[:lists][index][:todos].delete_at(item_idx)
-  session[:success] = 'The item has been deleted.'
+  @index = params[:index].to_i
+  @todo_list = load_list(@index)
 
-  redirect "/lists/#{index}"
+  item_idx = params[:item_idx].to_i
+  item = find_item(item_idx, @todo_list[:todos])
+  @todo_list[:todos].delete(item)
+
+  if env["HTTP_X_REQUESTED_WITH"] == "XMLHttpRequest"
+    status 204
+  else
+    session[:success] = 'The item has been deleted.'
+    redirect "/lists/#{@index}"
+  end
 end
 
 # Check off a completed item  
 post '/lists/:index/todos/:item_idx' do
-  index = params[:index].to_i
+  @index = params[:index].to_i
+  @todo_list = load_list(@index)
+
   item_idx = params[:item_idx].to_i
-  item = session[:lists][index][:todos][item_idx]
+  item = find_item(item_idx, @todo_list[:todos])
 
-  item[:completed] = params[:completed] == "true"
+  is_completed = params[:completed] == "true"
+  item[:completed] = is_completed
+
   session[:success] = "'#{item[:name]}' is completed." if item[:completed]
-
-  redirect "/lists/#{index}"
+  redirect "/lists/#{@index}"
 end
 
 # To complete all todos
 post '/lists/:index/complete_all' do
-  index = params[:index].to_i
-  session[:lists][index][:todos].each do |todo|
+  @index = params[:index].to_i
+  @todo_list = load_list(@index)
+
+  @todo_list[:todos].each do |todo|
     todo[:completed] = true
   end
-  session[:success] = 'All done!'
 
-  redirect "/lists/#{index}"
+  session[:success] = 'All done!'
+  redirect "/lists/#{@index}"
 end
