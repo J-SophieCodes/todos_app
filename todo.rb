@@ -24,16 +24,8 @@ after do
 end
 
 helpers do
-  def todos_remaining(todolist)
-    todolist[:todos].count { |todo| !todo[:completed] }
-  end
-
-  def todos_count(todolist)
-    todolist[:todos].size
-  end
-
   def all_done?(todolist)
-    todos_remaining(todolist) == 0 && todos_count(todolist) > 0
+    todolist[:todos_remaining_count] == 0 && todolist[:todos_count] > 0
   end
 
   def list_class(todolist)
@@ -112,6 +104,7 @@ end
 get '/lists/:index' do
   @index = params[:index].to_i
   @todo_list = load_list(@index)
+  @todos = @storage.find_todos_for_list(@index)
 
   erb :todo_list
 end
@@ -158,6 +151,7 @@ end
 post '/lists/:index/todos' do
   @index = params[:index].to_i
   @todo_list = load_list(@index)
+  @todos = @storage.find_todos_for_list(@index)
   @todo = params[:todo].strip.squeeze(" ")
 
   error = detect_item_name_error(@index, @todo)
